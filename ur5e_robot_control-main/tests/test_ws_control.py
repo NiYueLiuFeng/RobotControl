@@ -1,6 +1,7 @@
 import base64
 import json
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -34,9 +35,19 @@ class FakeEnv:
         return self.obs
 
 
+def make_vla(**overrides):
+    values = {
+        "repo_id": "repo",
+        "execute_horizon": 2,
+        "threshold": 0.7,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
 class WSPolicyControlTest(unittest.TestCase):
     def test_build_request_encodes_state_and_images(self):
-        from apps.run_ws_control import _build_request
+        from apps.run_ws_control import get_model_body
 
         obs = {
             "joint_positions": np.array([0, 1, 2, 3, 4, 5, 1], dtype=float),
@@ -44,7 +55,7 @@ class WSPolicyControlTest(unittest.TestCase):
             "wrist_rgb": np.full((8, 8, 3), 255, dtype=np.uint8),
         }
 
-        request = _build_request(obs, repo_id="repo", task="pick the pen")
+        request = get_model_body(obs, model="json", repo_id="repo", task="pick the pen")
 
         self.assertEqual(request["repo_id"], "repo")
         self.assertEqual(request["task"], "pick the pen")
@@ -59,7 +70,8 @@ class WSPolicyControlTest(unittest.TestCase):
         from apps.run_ws_control import _parse_actions
 
         actions = _parse_actions(
-            {"action": [[0, 1, 2, 3, 4, 5, 1], [1, 2, 3, 4, 5, 6, 0]]}
+            {"action": [[0, 1, 2, 3, 4, 5, 1], [1, 2, 3, 4, 5, 6, 0]]},
+            model="json",
         )
 
         self.assertEqual(actions.shape, (2, 7))
@@ -68,14 +80,14 @@ class WSPolicyControlTest(unittest.TestCase):
         from apps.run_ws_control import _parse_actions
 
         with self.assertRaisesRegex(ValueError, "7-value actions"):
-            _parse_actions({"action": [[0, 1, 2]]})
+            _parse_actions({"action": [[0, 1, 2]]}, model="json")
 
     def test_request_sends_json_and_reads_action(self):
         from apps.run_ws_control import _request
 
         connection = FakeConnection([json.dumps({"action": [[0] * 7]})])
 
-        response = _request(connection, {"state": [0] * 7})
+        response = _request(connection, {"state": [0] * 7}, model="json")
 
         self.assertEqual(json.loads(connection.sent[0]), {"state": [0] * 7})
         self.assertEqual(response, {"action": [[0] * 7]})
@@ -97,17 +109,102 @@ class WSPolicyControlTest(unittest.TestCase):
         executed = _run(
             env,
             connection,
-            repo_id="repo",
+            model="json",
+            vla=make_vla(),
             task="pick",
-            execute_horizon=2,
-            threshold=0.7,
             max_steps=2,
+            control_hz=100.0,
         )
 
         self.assertEqual(executed, 2)
         self.assertEqual(len(env.commands), 2)
         self.assertEqual(env.commands[0][-1], 1000.0)
         self.assertEqual(env.commands[1][-1], 0.0)
+
+
+class FastWAMProtocolTest(unittest.TestCase):
+    def test_build_request_uses_fixed_state_and_images(self):
+        from apps.run_ws_control import get_model_body
+
+        obs = {
+            "joint_positions": np.arange(7, dtype=float),
+            "third_left_top_rgb": np.zeros((8, 8, 3), dtype=np.uint8),
+            "wrist_rgb": np.zeros((8, 8, 3), dtype=np.uint8),
+        }
+
+        frame = get_model_body(
+            obs,
+            model="fastwam",
+            task="plug the charger",
+            request_id=3,
+        )
+
+        self.assertEqual(frame["v"], 1)
+        self.assertEqual(frame["type"], "infer")
+        self.assertEqual(frame["id"], "req-3")
+        self.assertEqual(frame["state"], [0, 1, 2, 3, 4, 5, 6])
+        self.assertEqual(
+            [image["key"] for image in frame["images"]], ["front", "wrist"]
+        )
+        self.assertTrue(frame["images"][0]["data"].startswith(b"\xff\xd8"))
+
+    def test_parse_actions_does_not_assume_a_dimension(self):
+        from apps.run_ws_control import _parse_actions
+
+        actions = _parse_actions(
+            {"type": "actions", "actions": [[0.0] * 5, [1.0] * 5]},
+            model="fastwam",
+        )
+
+        self.assertEqual(actions.shape, (2, 5))
+
+    def test_hello_ack_is_validated(self):
+        from apps.run_ws_control import _fastwam_handshake, _pack, _unpack
+
+        connection = FakeConnection(
+            [_pack({"type": "hello_ack", "model": {"action_dim": 5}})]
+        )
+        info = _fastwam_handshake(connection, token="token", prompt="plug")
+
+        self.assertEqual(info["action_dim"], 5)
+        hello = _unpack(connection.sent[0])
+        self.assertEqual(hello["type"], "hello")
+        self.assertEqual(hello["token"], "token")
+        self.assertEqual(hello["options"]["num_inference_steps"], 10)
+
+        with self.assertRaisesRegex(RuntimeError, "handshake failed"):
+            _fastwam_handshake(
+                FakeConnection([_pack({"type": "error"})]),
+                token=None,
+                prompt="plug",
+            )
+
+    def test_run_parses_actions_without_commanding_robot(self):
+        from apps.run_ws_control import _pack, _run
+
+        connection = FakeConnection(
+            [_pack({"type": "actions", "actions": [[0.1] * 5]})]
+        )
+        env = FakeEnv(
+            {
+                "joint_positions": np.zeros(7),
+                "third_left_top_rgb": np.zeros((4, 4, 3), dtype=np.uint8),
+                "wrist_rgb": np.zeros((4, 4, 3), dtype=np.uint8),
+            }
+        )
+
+        executed = _run(
+            env,
+            connection,
+            model="fastwam",
+            vla=make_vla(execute_horizon=1),
+            task="plug",
+            max_steps=1,
+            control_hz=1000.0,
+        )
+
+        self.assertEqual(executed, 1)
+        self.assertEqual(env.commands, [])
 
 
 if __name__ == "__main__":

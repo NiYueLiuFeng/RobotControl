@@ -58,9 +58,10 @@ vla:
   server_url: "ws://127.0.0.1:8000"   # 策略服务地址
   api_key:                            # 可留空
   repo_id: "pick_place_blocks_150_train1_v3.0"
-  execute_horizon: 15                 # 每次响应执行多少条 action
+  execute_horizon: 15                 # 每次响应处理多少条 action
   request_timeout_s: 5.0              # 连接超时
   threshold: 0.7                      # 夹爪二值化阈值
+  model: "json"                       # 协议：json 或 fastwam
 
 task:
   file: "configs/tasks/pick_place_pen_block.yaml"
@@ -69,6 +70,16 @@ task:
 `ws-control` **只使用**上面这些字段。旧的 `vla.image_key_map`、`vla.state_key`、
 `vla.action_space`、`vla.max_joint_delta`、`vla.reset_on_start` 是给
 `run-vla-inference` 用的，新接口不读取它们。
+
+请求体里的 `state` 和图片字段不放进配置，直接写在
+`src/apps/run_ws_control.py` 顶部：
+
+```python
+IMAGE_FIELDS = {"third_person": "third_left_top_rgb", "wrist": "wrist_rgb"}
+FASTWAM_IMAGE_FIELDS = {"front": "third_left_top_rgb", "wrist": "wrist_rgb"}
+```
+
+`state` 固定取 `obs["joint_positions"]`。换模型要改字段时，改这几行即可。
 
 ---
 
@@ -167,10 +178,11 @@ uv run ws-control \
 | 参数 | 说明 |
 | --- | --- |
 | `--config` | 运行配置，默认 `configs/hardware/ur5e_d455.yaml` |
+| `--model` | 协议：`json`（默认）或 `fastwam`，覆盖 `vla.model` |
 | `--server-url` | 覆盖 `vla.server_url` |
-| `--api-key` | 覆盖 `vla.api_key` |
+| `--api-key` | 覆盖 `vla.api_key`（fastwam 下作为 hello token） |
 | `--task` | 覆盖任务描述文本 |
-| `--max-steps` | 执行多少条 action 后停止，不填则一直运行 |
+| `--max-steps` | 处理多少条 action 后停止，不填则一直运行 |
 | `--no-wait` | 跳过 ENTER 确认，直接开始 |
 
 首次上真机建议：
@@ -190,14 +202,19 @@ uv run ws-control --max-steps 5
 `_run` 主循环。协议相关只有三个小函数：
 
 ```python
-def _build_request(obs, *, repo_id, task, jpeg_quality=90) -> dict
-def _parse_actions(response) -> np.ndarray
-def _request(connection, payload) -> dict
+def get_model_body(
+    obs, *, model, task, repo_id="", request_id=0, jpeg_quality=90,
+) -> dict
+def _parse_actions(response, *, model) -> np.ndarray
+def _request(connection, body, *, model) -> dict
 ```
 
 常见改法：
 
 **改图片字段名 / 增加一路相机**
+
+直接改文件顶部的常量，左边是发给服务端的键名，右边是
+`RobotEnv.get_obs()` 里的 key：
 
 ```python
 IMAGE_FIELDS = {
@@ -206,8 +223,6 @@ IMAGE_FIELDS = {
     "wrist_depth": "wrist_depth",     # 新增一路
 }
 ```
-
-左侧是发给服务端的键名，右侧是 `RobotEnv.get_obs()` 里的 key。
 
 **增加请求字段**
 
@@ -224,7 +239,7 @@ return {
 **改响应解析**（例如服务端包了一层 `data`）
 
 ```python
-def _parse_actions(response):
+def _parse_actions(response, *, model):
     response = response.get("data", response)
     ...
 ```
@@ -233,7 +248,50 @@ def _parse_actions(response):
 
 ---
 
-## 7. 常见问题
+## 7. FastWAM 协议（`--model fastwam`）
+
+`fastwam` 走 FastWAM 的 msgpack WebSocket 协议，帧格式参考
+`FastWAM/docs/readme_infer.md`。与默认 `json` 的差异：
+
+| | `json` | `fastwam` |
+| --- | --- | --- |
+| 传输 | JSON 文本帧 | msgpack 二进制帧 |
+| 建连 | 直接请求 | 先发 `hello`，收 `hello_ack` |
+| 图片 | base64 JPEG | 原始 JPEG 字节 |
+| state | `obs["joint_positions"]` | `obs["joint_positions"]` |
+| 动作 | 二值化夹爪后下发 | **只解析并打印，不下发** |
+
+启动：
+
+```bash
+uv run ws-control \
+  --config configs/hardware/ur5e_d455.yaml \
+  --model fastwam \
+  --server-url ws://127.0.0.1:8765/v1/ws \
+  --api-key fastwam-dev-token \
+  --max-steps 5
+```
+
+请求体字段映射：
+
+| 请求字段 | 来源 |
+| --- | --- |
+| `prompt` | `task.file` 的 `task`，或 `--task` |
+| `images[i].key` | `FASTWAM_IMAGE_FIELDS` 左侧 |
+| `images[i].data` | `FASTWAM_IMAGE_FIELDS` 右侧 obs 键编码出的 JPEG 字节 |
+| `state` | `obs["joint_positions"]` 平铺后的列表 |
+| `options.num_inference_steps` | `run_ws_control.py` 的 `NUM_INFERENCE_STEPS`（默认 10） |
+
+字段都固定在 `run_ws_control.py` 顶部常量里；`action` 只校验是二维有限值
+数组，维度以服务端返回为准，不写死。
+
+> 当前 `fastwam` 是“只解析、不执行”模式：收到 action 后打印
+> `FastWAM actions: shape=(N, D) first=[...]`，不会调用 `env.step()`。
+> 若要真正驱动 UR5e，需要先确定 action 到关节角的映射（例如 IK）。
+
+---
+
+## 8. 常见问题
 
 | 现象 | 原因 / 处理 |
 | --- | --- |
@@ -247,7 +305,7 @@ def _parse_actions(response):
 
 ---
 
-## 8. 安全提示
+## 9. 安全提示
 
 - 真机运行前确认急停按钮可用，手不要离开急停。
 - 首次运行务必 `--max-steps` 取小值（如 5），并观察 `reset_joints` 移动过程。

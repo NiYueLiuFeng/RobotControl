@@ -391,7 +391,7 @@ The server replies with an action chunk:
 ```
 
 Adjust the wire format in `src/apps/run_ws_control.py`
-(`_build_request` / `_parse_actions` / `_request`).
+(`get_model_body` / `_parse_actions` / `_request`).
 
 ```bash
 uv run ws-control \
@@ -402,6 +402,12 @@ uv run ws-control \
 
 `vla.execute_horizon` actions are executed per response. The gripper value is
 binarized with `vla.threshold` and sent as 0 or 1000.
+
+Use `--model fastwam` (or `vla.model: fastwam`) to speak FastWAM's
+msgpack/WebSocket protocol. That path sends a `hello` handshake, raw JPEG
+bytes and a joint-state vector, then parses and logs the action chunk without
+commanding the robot. Request fields are fixed in `run_ws_control.py`
+(`IMAGE_FIELDS`, `FASTWAM_IMAGE_FIELDS`).
 
 ## Project Layout
 
