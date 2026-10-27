@@ -60,7 +60,7 @@ vla:
   repo_id: "pick_place_blocks_150_train1_v3.0"
   execute_horizon: 15                 # 每次响应执行多少条 action
   request_timeout_s: 5.0              # 连接超时
-  threadhold: 0.7                     # 夹爪二值化阈值
+  threshold: 0.7                      # 夹爪二值化阈值
 
 task:
   file: "configs/tasks/pick_place_pen_block.yaml"
@@ -93,7 +93,7 @@ task:
 | 字段 | 说明 |
 | --- | --- |
 | `state` | 7 维：6 个关节角（rad）+ 夹爪状态（0/1） |
-| `images` | RGB 图像，JPEG + base64；键名见 `DEFAULT_IMAGE_FIELDS` |
+| `images` | RGB 图像，JPEG + base64；键名见 `IMAGE_FIELDS` |
 | `task` | 来自 `task.file` 的 `task` 字段，可用 `--task` 覆盖 |
 | `repo_id` | 来自 `vla.repo_id` |
 
@@ -105,8 +105,8 @@ task:
 
 - `action` 是 `N × 7` 的数组，客户端只执行前 `vla.execute_horizon` 条。
 - 前 6 维按**绝对关节角**下发（`servoJ`）。
-- 第 7 维是夹爪，`>= vla.threadhold` 记为张开（1000），否则闭合（0）。
-  如果你的服务端直接输出 `0~1000`，把 `threadhold` 改成 `500` 即可。
+- 第 7 维是夹爪，`>= vla.threshold` 记为张开（1000），否则闭合（0）。
+  如果你的服务端直接输出 `0~1000`，把 `threshold` 改成 `500` 即可。
 - 服务端返回 `{"ok": false, "error": "..."}` 时客户端会抛错并停止。
 
 ---
@@ -185,12 +185,14 @@ uv run ws-control --max-steps 5
 
 ## 6. 修改接口字段
 
-所有和字段相关的内容都在
-`src/ur5e_control/inference/json_protocol.py`，只有两个函数：
+整个入口就是一个文件
+`src/apps/run_ws_control.py`，从上到下是：参数 → 配置 → 建环境 → 连服务端 →
+`_run` 主循环。协议相关只有三个小函数：
 
 ```python
-def build_request(env_obs, *, repo_id, task, image_fields=..., jpeg_quality=90)
-def parse_actions(response) -> np.ndarray
+def _build_request(obs, *, repo_id, task, jpeg_quality=90) -> dict
+def _parse_actions(response) -> np.ndarray
+def _request(connection, payload) -> dict
 ```
 
 常见改法：
@@ -198,7 +200,7 @@ def parse_actions(response) -> np.ndarray
 **改图片字段名 / 增加一路相机**
 
 ```python
-DEFAULT_IMAGE_FIELDS = {
+IMAGE_FIELDS = {
     "third_person": "third_left_top_rgb",
     "wrist": "wrist_rgb",
     "wrist_depth": "wrist_depth",     # 新增一路
@@ -213,8 +215,8 @@ DEFAULT_IMAGE_FIELDS = {
 return {
     "repo_id": repo_id,
     "task": task,
-    "state": [float(v) for v in env_obs["joint_positions"]],
-    "tcp_pose": [float(v) for v in env_obs["tcp_pose"]],   # 新增
+    "state": [float(v) for v in obs["joint_positions"]],
+    "tcp_pose": [float(v) for v in obs["tcp_pose"]],   # 新增
     "images": {...},
 }
 ```
@@ -222,12 +224,12 @@ return {
 **改响应解析**（例如服务端包了一层 `data`）
 
 ```python
-def parse_actions(response):
+def _parse_actions(response):
     response = response.get("data", response)
     ...
 ```
 
-字段改动不影响主循环和硬件层，不需要改 `run_ws_control.py`。
+字段改动不影响主循环和硬件层，改这三处即可。
 
 ---
 
@@ -239,7 +241,7 @@ def parse_actions(response):
 | `ConnectionRefusedError` / 连接超时 | 服务端未启动、端口错误，或 `--server-url` 写错 |
 | `JSONDecodeError` | 服务端返回了二进制/msgpack；本入口只接受 JSON 文本帧 |
 | `policy response 'action' must be a list of 7-value actions` | 返回维度不是 `N×7`，检查 `parse_actions` |
-| 夹爪不动作或方向相反 | 调整 `vla.threadhold`（0~1 输出用 0.7，0~1000 输出用 500） |
+| 夹爪不动作或方向相反 | 调整 `vla.threshold`（0~1 输出用 0.7，0~1000 输出用 500） |
 | 机械臂运动幅度过大 | 降低 `vla.execute_horizon`，并确认服务端输出的是绝对关节角 |
 | 终端无输出 | 检查是否停在 `press ENTER` 提示，或加 `--no-wait` |
 

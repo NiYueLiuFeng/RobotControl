@@ -1,7 +1,6 @@
 import base64
 import json
 import unittest
-from types import SimpleNamespace
 
 import numpy as np
 
@@ -37,7 +36,7 @@ class FakeEnv:
 
 class WSPolicyControlTest(unittest.TestCase):
     def test_build_request_encodes_state_and_images(self):
-        from ur5e_control.inference.json_protocol import build_request
+        from apps.run_ws_control import _build_request
 
         obs = {
             "joint_positions": np.array([0, 1, 2, 3, 4, 5, 1], dtype=float),
@@ -45,7 +44,7 @@ class WSPolicyControlTest(unittest.TestCase):
             "wrist_rgb": np.full((8, 8, 3), 255, dtype=np.uint8),
         }
 
-        request = build_request(obs, repo_id="repo", task="pick the pen")
+        request = _build_request(obs, repo_id="repo", task="pick the pen")
 
         self.assertEqual(request["repo_id"], "repo")
         self.assertEqual(request["task"], "pick the pen")
@@ -57,44 +56,35 @@ class WSPolicyControlTest(unittest.TestCase):
         )
 
     def test_parse_actions_accepts_action_chunk(self):
-        from ur5e_control.inference.json_protocol import parse_actions
+        from apps.run_ws_control import _parse_actions
 
-        actions = parse_actions(
+        actions = _parse_actions(
             {"action": [[0, 1, 2, 3, 4, 5, 1], [1, 2, 3, 4, 5, 6, 0]]}
         )
 
         self.assertEqual(actions.shape, (2, 7))
 
     def test_parse_actions_rejects_wrong_dimension(self):
-        from ur5e_control.inference.json_protocol import parse_actions
+        from apps.run_ws_control import _parse_actions
 
         with self.assertRaisesRegex(ValueError, "7-value actions"):
-            parse_actions({"action": [[0, 1, 2]]})
+            _parse_actions({"action": [[0, 1, 2]]})
 
-    def test_client_sends_json_and_reads_action(self):
-        from ur5e_control.inference.json_ws_client import JsonWebSocketClient
+    def test_request_sends_json_and_reads_action(self):
+        from apps.run_ws_control import _request
 
         connection = FakeConnection([json.dumps({"action": [[0] * 7]})])
-        client = JsonWebSocketClient(
-            "ws://policy", connection_factory=lambda *_: connection
-        )
 
-        response = client.request({"state": [0] * 7})
-        client.close()
+        response = _request(connection, {"state": [0] * 7})
 
         self.assertEqual(json.loads(connection.sent[0]), {"state": [0] * 7})
         self.assertEqual(response, {"action": [[0] * 7]})
-        self.assertTrue(connection.closed)
 
-    def test_loop_executes_returned_action_chunk(self):
+    def test_run_executes_returned_action_chunk(self):
         from apps.run_ws_control import _run
 
-        class FakeClient:
-            def request(self, payload):
-                return {"action": [[0.1] * 6 + [0.9], [0.2] * 6 + [0.1]]}
-
-        config = SimpleNamespace(
-            vla=SimpleNamespace(repo_id="repo", execute_horizon=2, threadhold=0.7)
+        connection = FakeConnection(
+            [json.dumps({"action": [[0.1] * 6 + [0.9], [0.2] * 6 + [0.1]]})]
         )
         env = FakeEnv(
             {
@@ -104,7 +94,15 @@ class WSPolicyControlTest(unittest.TestCase):
             }
         )
 
-        executed = _run(env, FakeClient(), config, "pick", max_steps=2)
+        executed = _run(
+            env,
+            connection,
+            repo_id="repo",
+            task="pick",
+            execute_horizon=2,
+            threshold=0.7,
+            max_steps=2,
+        )
 
         self.assertEqual(executed, 2)
         self.assertEqual(len(env.commands), 2)

@@ -171,7 +171,7 @@ def build_vla_inference_controller(
             env=bundle.env,
             client=client,
             task=task,
-            gripper_threadhold=config.vla.threadhold,
+            gripper_threadhold=config.vla.threshold,
             request_adapter=VLARequestAdapter(
                 repo_id=config.vla.repo_id,
                 state_key=config.vla.state_key,

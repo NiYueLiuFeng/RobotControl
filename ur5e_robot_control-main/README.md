@@ -390,8 +390,8 @@ The server replies with an action chunk:
 {"action": [[j1, j2, j3, j4, j5, j6, gripper], [j1, j2, j3, j4, j5, j6, gripper]]}
 ```
 
-Adjust the wire format in `src/ur5e_control/inference/json_protocol.py`
-(`build_request` / `parse_actions`).
+Adjust the wire format in `src/apps/run_ws_control.py`
+(`_build_request` / `_parse_actions` / `_request`).
 
 ```bash
 uv run ws-control \
@@ -401,7 +401,7 @@ uv run ws-control \
 ```
 
 `vla.execute_horizon` actions are executed per response. The gripper value is
-binarized with `vla.threadhold` and sent as 0 or 1000.
+binarized with `vla.threshold` and sent as 0 or 1000.
 
 ## Project Layout
 
