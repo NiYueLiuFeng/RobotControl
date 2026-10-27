@@ -1,0 +1,54 @@
+# ===========================================================================
+# Python
+# ===========================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tooling caches and reports
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# ===========================================================================
+# Editors / OS
+# ===========================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ===========================================================================
+# Runtime artifacts (generated on the edge laptop, never committed)
+# ===========================================================================
+*.log
+.datasets/
+ur5e_robot_control-main/configs/safety/*.yaml
+ur5e_robot_control-main/configs/cameras/*.yaml
+
+# ===========================================================================
+# Third-party dependencies (installed locally, not committed)
+# The directory names are kept as placeholders, see third_party/README.md
+# ===========================================================================
+ur5e_robot_control-main/third_party/DynamixelSDK/*
+!ur5e_robot_control-main/third_party/DynamixelSDK/.gitkeep
+ur5e_robot_control-main/third_party/mujoco_menagerie/
