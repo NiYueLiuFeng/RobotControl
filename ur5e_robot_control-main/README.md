@@ -151,6 +151,7 @@ The full operator guide is here:
 | `uv run calibrate-safety-zone` | Generate UR5e joint safety limits through teleoperation |
 | `uv run record-teleop` | Collect LeRobot v3 teleoperation episodes |
 | `uv run run-vla-inference` | Run UR5e control from a CloudRobo-VLA WebSocket server |
+| `uv run ws-control` | Run UR5e control from a JSON-over-WebSocket policy server |
 
 ## Hardware Bring-Up
 
@@ -368,6 +369,39 @@ separate from the LeRobot writer's `wrist` / `third_person` feature names.
 
 If the VLA server uses a different CloudRobo dataset mixture schema, update
 `vla.repo_id` and `vla.image_key_map` together.
+
+## JSON Policy Control
+
+`ws-control` is a smaller, JSON-only loop for a custom policy server. Each step
+uploads the live observation:
+
+```json
+{
+  "repo_id": "...",
+  "task": "...",
+  "state": [j1, j2, j3, j4, j5, j6, gripper],
+  "images": {"third_person": "<base64 jpeg>", "wrist": "<base64 jpeg>"}
+}
+```
+
+The server replies with an action chunk:
+
+```json
+{"action": [[j1, j2, j3, j4, j5, j6, gripper], [j1, j2, j3, j4, j5, j6, gripper]]}
+```
+
+Adjust the wire format in `src/ur5e_control/inference/json_protocol.py`
+(`build_request` / `parse_actions`).
+
+```bash
+uv run ws-control \
+  --config configs/hardware/ur5e_d455.yaml \
+  --server-url ws://<policy-host>:8000 \
+  --max-steps 20
+```
+
+`vla.execute_horizon` actions are executed per response. The gripper value is
+binarized with `vla.threadhold` and sent as 0 or 1000.
 
 ## Project Layout
 
