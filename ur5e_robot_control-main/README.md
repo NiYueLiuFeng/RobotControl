@@ -404,9 +404,10 @@ uv run ws-control \
 binarized with `vla.threshold` and sent as 0 or 1000.
 
 Use `--model fastwam` (or `vla.model: fastwam`) to speak FastWAM's
-msgpack/WebSocket protocol. That path sends a `hello` handshake, raw JPEG
-bytes and a joint-state vector, then parses and logs the action chunk without
-commanding the robot. Request fields are fixed in `run_ws_control.py`
+msgpack/WebSocket protocol. That path sends raw JPEG bytes and a joint-state
+vector directly as an `infer` frame (no handshake; the token is appended to the
+URL), then parses and logs the action chunk without commanding the robot.
+Request fields are fixed in `run_ws_control.py`
 (`IMAGE_FIELDS`, `FASTWAM_IMAGE_FIELDS`).
 
 ## Project Layout

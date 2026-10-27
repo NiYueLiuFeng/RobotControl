@@ -158,26 +158,39 @@ class FastWAMProtocolTest(unittest.TestCase):
 
         self.assertEqual(actions.shape, (2, 5))
 
-    def test_hello_ack_is_validated(self):
-        from apps.run_ws_control import _fastwam_handshake, _pack, _unpack
+    def test_token_is_appended_to_url(self):
+        from apps.run_ws_control import _url_with_token
+
+        self.assertEqual(
+            _url_with_token("ws://host:8765/v1/ws", "secret"),
+            "ws://host:8765/v1/ws?token=secret",
+        )
+        self.assertEqual(
+            _url_with_token("ws://host:8765/v1/ws?x=1", "a b"),
+            "ws://host:8765/v1/ws?x=1&token=a%20b",
+        )
+        self.assertEqual(_url_with_token("ws://host/v1/ws", None), "ws://host/v1/ws")
+
+    def test_first_frame_is_infer_without_handshake(self):
+        from apps.run_ws_control import _pack, _request, _unpack
 
         connection = FakeConnection(
-            [_pack({"type": "hello_ack", "model": {"action_dim": 5}})]
+            [_pack({"type": "actions", "actions": [[0.1] * 5]})]
         )
-        info = _fastwam_handshake(connection, token="token", prompt="plug")
+        body = {
+            "v": 1,
+            "type": "infer",
+            "id": "req-0",
+            "prompt": "plug",
+            "images": [],
+            "state": [0.0] * 7,
+        }
 
-        self.assertEqual(info["action_dim"], 5)
-        hello = _unpack(connection.sent[0])
-        self.assertEqual(hello["type"], "hello")
-        self.assertEqual(hello["token"], "token")
-        self.assertEqual(hello["options"]["num_inference_steps"], 10)
+        response = _request(connection, body, model="fastwam")
 
-        with self.assertRaisesRegex(RuntimeError, "handshake failed"):
-            _fastwam_handshake(
-                FakeConnection([_pack({"type": "error"})]),
-                token=None,
-                prompt="plug",
-            )
+        self.assertEqual(response["type"], "actions")
+        self.assertEqual(len(connection.sent), 1)
+        self.assertEqual(_unpack(connection.sent[0])["type"], "infer")
 
     def test_run_parses_actions_without_commanding_robot(self):
         from apps.run_ws_control import _pack, _run

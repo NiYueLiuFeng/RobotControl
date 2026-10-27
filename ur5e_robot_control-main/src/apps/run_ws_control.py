@@ -3,8 +3,9 @@
 Two protocols are supported, selected with ``--model``:
 
 - ``json`` (default): JSON text frames with base64 JPEG images.
-- ``fastwam``: FastWAM msgpack frames with a ``hello`` handshake and raw
-  JPEG bytes. Actions are parsed and logged but NOT sent to the robot.
+- ``fastwam``: FastWAM msgpack frames with raw JPEG bytes and no handshake
+  (token goes in the URL). Actions are parsed and logged but NOT sent to the
+  robot.
 
 Each loop: read cameras + state -> send one request -> receive one action
 chunk -> execute (json) or log (fastwam) the actions.
@@ -17,6 +18,7 @@ import base64
 import json
 import time
 from typing import Any
+from urllib.parse import quote
 
 import msgpack
 import numpy as np
@@ -75,18 +77,24 @@ def main(argv: list[str] | None = None) -> None:
 
     # 1. 启动机器人 ZMQ 子进程和 RealSense 相机服务。
     bundle = build_robot_env(config)
+
     # 2. 连接策略服务端；整轮控制复用这一条长连接。
-    #    FastWAM 的 token 放在 hello 帧里，不走 Authorization 头。
-    connection = connect_websocket(
-        args.server_url or vla.server_url,
-        None if model == "fastwam" else api_key,
-        vla.request_timeout_s,
-    )
+    #    FastWAM 不走 Authorization 头，token 放在 URL 查询参数里。
+    server_url = args.server_url or vla.server_url
+    if model == "fastwam":
+        connection = connect_websocket(
+            _url_with_token(server_url, api_key),
+            None,
+            vla.request_timeout_s,
+        )
+    else:
+        connection = connect_websocket(
+            server_url,
+            api_key,
+            vla.request_timeout_s,
+        )
     try:
-        # 3. FastWAM 建连后必须先握手，拿到相机/动作维度等信息。
-        if model == "fastwam":
-            _fastwam_handshake(connection, token=api_key, prompt=task)
-        # 4. 先分小步移动到初始位姿，避免上电后一次大幅跳变。
+        # 3. 先分小步移动到初始位姿，避免上电后一次大幅跳变。
         _move_to_start(bundle.env, config.robot.reset_joints)
         if not args.no_wait:
             # 停顿一下，留给操作员确认现场并把手放到急停上。
@@ -258,31 +266,13 @@ def _parse_actions(response: dict[str, Any], *, model: str) -> np.ndarray:
     return actions
 
 
-def _fastwam_handshake(connection: Any, *, token: str | None, prompt: str) -> dict:
-    """Send `hello` and validate the `hello_ack` reply."""
+def _url_with_token(url: str, token: str | None) -> str:
+    """Append the FastWAM token as a query parameter."""
 
-    hello = {
-        "v": 1,
-        "type": "hello",
-        "client": "ur5e",
-        "prompt": prompt,
-        "options": {"num_inference_steps": NUM_INFERENCE_STEPS},
-    }
-    if token:
-        hello["token"] = token
-    connection.send(_pack(hello))
-    ack = _unpack(connection.recv())
-    if ack.get("type") != "hello_ack":
-        raise RuntimeError(f"FastWAM handshake failed: {ack!r}")
-    info = ack.get("model") or {}
-    if info:
-        cameras = [camera.get("key") for camera in info.get("cameras", [])]
-        print(
-            f"FastWAM ready: cameras={cameras} "
-            f"state_dim={info.get('state_dim')} "
-            f"action_dim={info.get('action_dim')}"
-        )
-    return info
+    if not token:
+        return url
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}token={quote(token)}"
 
 
 def _recv_action_frame(connection: Any) -> dict[str, Any]:

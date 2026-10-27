@@ -180,7 +180,7 @@ uv run ws-control \
 | `--config` | 运行配置，默认 `configs/hardware/ur5e_d455.yaml` |
 | `--model` | 协议：`json`（默认）或 `fastwam`，覆盖 `vla.model` |
 | `--server-url` | 覆盖 `vla.server_url` |
-| `--api-key` | 覆盖 `vla.api_key`（fastwam 下作为 hello token） |
+| `--api-key` | 覆盖 `vla.api_key` |
 | `--task` | 覆盖任务描述文本 |
 | `--max-steps` | 处理多少条 action 后停止，不填则一直运行 |
 | `--no-wait` | 跳过 ENTER 确认，直接开始 |
@@ -256,7 +256,7 @@ def _parse_actions(response, *, model):
 | | `json` | `fastwam` |
 | --- | --- | --- |
 | 传输 | JSON 文本帧 | msgpack 二进制帧 |
-| 建连 | 直接请求 | 先发 `hello`，收 `hello_ack` |
+| 建连 | 直接请求 | 直接发 `infer`，不做握手 |
 | 图片 | base64 JPEG | 原始 JPEG 字节 |
 | state | `obs["joint_positions"]` | `obs["joint_positions"]` |
 | 动作 | 二值化夹爪后下发 | **只解析并打印，不下发** |
