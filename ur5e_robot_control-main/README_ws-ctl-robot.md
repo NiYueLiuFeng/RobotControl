@@ -178,7 +178,7 @@ uv run ws-control \
 | 参数 | 说明 |
 | --- | --- |
 | `--config` | 运行配置，默认 `configs/hardware/ur5e_d455.yaml` |
-| `--model` | 协议：`json`（默认）或 `fastwam`，覆盖 `vla.model` |
+| `--model` | 协议：`json`（默认）、`fastwam` 或 `openpi05`，覆盖 `vla.model` |
 | `--server-url` | 覆盖 `vla.server_url` |
 | `--api-key` | 覆盖 `vla.api_key` |
 | `--task` | 覆盖任务描述文本 |
@@ -288,6 +288,31 @@ uv run ws-control \
 > 当前 `fastwam` 是“只解析、不执行”模式：收到 action 后打印
 > `FastWAM actions: shape=(N, D) first=[...]`，不会调用 `env.step()`。
 > 若要真正驱动 UR5e，需要先确定 action 到关节角的映射（例如 IK）。
+
+### 7.1 OpenPI 0.5（`--model openpi05`）
+
+走 OpenPI 的 msgpack-numpy 协议，body 里直接是 numpy 数组（不是 JPEG），
+需要安装 `msgpack-numpy`（已加入项目依赖）：
+
+| 请求字段 | 来源 |
+| --- | --- |
+| `images["cam_high"]` | `third_left_top_rgb`，转成 `(3, H, W)` uint8 |
+| `images["cam_left_wrist"]` | `wrist_rgb`（单腕机器人两路腕部共用） |
+| `images["cam_right_wrist"]` | `wrist_rgb` |
+| `state` | 7 维关节状态（6 关节 + 夹爪）float32 |
+| `prompt` | `task.file` 的 `task`，或 `--task` |
+
+```bash
+uv run ws-control \
+  --config configs/hardware/ur5e_d455.yaml \
+  --model openpi05 \
+  --server-url ws://127.0.0.1:8000 \
+  --api-key fastwam-dev-token \
+  --max-steps 5
+```
+
+响应读取 `actions`（`(N, 7)`，维度以服务端返回为准），和 `fastwam` 一样
+只解析并打印 `OpenPI05 actions: ...`，不会下发到机器人。
 
 ---
 

@@ -284,7 +284,7 @@ class VLARuntimeConfig:
     max_joint_delta: float | None = 0.1
     reset_on_start: bool = True
     threshold: float | None = 0.7
-    # ws-control 协议: "json"（简单 JSON）或 "fastwam"（msgpack + hello）。
+    # ws-control 协议: "json"（简单 JSON）、"fastwam" 或 "openpi05"。
     model: str = "json"
 
     def __post_init__(self) -> None:
@@ -308,8 +308,8 @@ class VLARuntimeConfig:
         if self.max_joint_delta is not None and self.max_joint_delta < 0:
             raise ValueError("vla.max_joint_delta must be non-negative")
         model = self.model.strip().lower()
-        if model not in {"json", "fastwam"}:
-            raise ValueError("vla.model must be 'json' or 'fastwam'")
+        if model not in {"json", "fastwam", "openpi05"}:
+            raise ValueError("vla.model must be 'json', 'fastwam' or 'openpi05'")
         object.__setattr__(self, "action_space", action_space)
         object.__setattr__(self, "model", model)
         object.__setattr__(

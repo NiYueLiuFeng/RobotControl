@@ -1,14 +1,16 @@
 """Control the UR5e from a remote policy server over WebSocket.
 
-Two protocols are supported, selected with ``--model``:
+Three protocols are supported, selected with ``--model``:
 
 - ``json`` (default): JSON text frames with base64 JPEG images.
 - ``fastwam``: FastWAM msgpack frames with raw JPEG bytes and no handshake
   (token goes in the URL). Actions are parsed and logged but NOT sent to the
   robot.
+- ``openpi05``: OpenPI 0.5 msgpack-numpy frames with CHW image arrays. Actions
+  are parsed and logged but NOT sent to the robot.
 
 Each loop: read cameras + state -> send one request -> receive one action
-chunk -> execute (json) or log (fastwam) the actions.
+chunk -> execute (json) or log (fastwam/openpi05) the actions.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from ur5e_control.inference.websocket import connect_websocket
 from ur5e_control.runtime.config import load_runtime_config, resolve_repo_path
 from ur5e_control.runtime.env import build_robot_env
 
-MODELS = ("json", "fastwam")
+MODELS = ("json", "fastwam", "openpi05")
 # 每条 json action 的维度：6 个关节角（rad）+ 1 个夹爪值。
 ACTION_DIM = 7
 # FastWAM 的去噪步数。
@@ -37,6 +39,13 @@ NUM_INFERENCE_STEPS = 10
 IMAGE_FIELDS = {"third_person": "third_left_top_rgb", "wrist": "wrist_rgb"}
 # fastwam 协议：服务端相机键名 -> RobotEnv.get_obs() 键名。
 FASTWAM_IMAGE_FIELDS = {"front": "third_left_top_rgb", "wrist": "wrist_rgb"}
+# openpi05 协议：服务端相机键名 -> RobotEnv.get_obs() 键名。
+# 单腕机器人没有左右两路腕部相机，两个键共用同一路 wrist。
+OPENPI_IMAGE_FIELDS = {
+    "cam_high": "third_left_top_rgb",
+    "cam_left_wrist": "wrist_rgb",
+    "cam_right_wrist": "wrist_rgb",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         choices=MODELS,
         default=None,
-        help="Policy protocol: 'json' (default) or 'fastwam'.",
+        help="Policy protocol: 'json' (default), 'fastwam' or 'openpi05'.",
     )
     parser.add_argument("--server-url", default=None, help="Policy WebSocket URL.")
     parser.add_argument("--api-key", default=None, help="Optional policy API key.")
@@ -151,9 +160,14 @@ def _run(
                 f"FastWAM actions: shape={actions.shape} "
                 f"first={np.round(actions[0], 4).tolist()}"
             )
+        elif model == "openpi05" and len(actions):
+            print(
+                f"OpenPI05 actions: shape={actions.shape} "
+                f"first={np.round(actions[0], 4).tolist()}"
+            )
         for action in actions:
-            if model == "fastwam":
-                # 仅解析，不向机器人下发动作；按控制周期维持节奏。
+            if model != "json":
+                # 非 json 协议仅解析，不向机器人下发动作；按控制周期维持节奏。
                 time.sleep(1.0 / control_hz)
             else:
                 # RobotEnv.step 会做安全限位，并按 control_hz 控制下发节奏。
@@ -174,14 +188,25 @@ def get_model_body(
     request_id: int = 0,
     jpeg_quality: int = 90,
 ) -> dict[str, Any]:
-    """返回固定格式的请求 body：json 或 fastwam。
+    """返回固定格式的请求 body：json、fastwam 或 openpi05。
 
-    两种协议都用关节状态作为 `state`，图片键名分别是 `IMAGE_FIELDS`
-    和 `FASTWAM_IMAGE_FIELDS`。换模型要改字段时，直接改这几个常量。
+    图片键名分别是 `IMAGE_FIELDS`、`FASTWAM_IMAGE_FIELDS` 和
+    `OPENPI_IMAGE_FIELDS`。换模型要改字段时，直接改这几个常量。
     """
 
     # 7 维：6 个关节角 + 夹爪状态；与相机协议无关。
     state = np.asarray(obs["joint_positions"], dtype=float).reshape(-1).tolist()
+
+    if model == "openpi05":
+        # OpenPI 0.5 直接收发 numpy 数组（走 msgpack-numpy），不走 JPEG。
+        return {
+            "images": {
+                name: _to_chw_uint8(obs[obs_key])
+                for name, obs_key in OPENPI_IMAGE_FIELDS.items()
+            },
+            "state": np.asarray(obs["joint_positions"], dtype=np.float32).reshape(-1),
+            "prompt": task,
+        }
 
     if model == "fastwam":
         # 参考 FastWAM 的 infer 帧：图片是原始 JPEG 字节，不是 base64。
@@ -214,8 +239,29 @@ def get_model_body(
     }
 
 
+def _to_chw_uint8(image: Any) -> np.ndarray:
+    """Convert an RGB `HxWx3` frame to OpenPI's CHW uint8 layout."""
+
+    rgb = np.asarray(image)
+    if rgb.ndim != 3 or rgb.shape[2] != 3:
+        raise ValueError(f"expected an HxWx3 RGB image, got shape {rgb.shape}")
+    return np.ascontiguousarray(rgb.transpose(2, 0, 1)).astype(np.uint8, copy=False)
+
+
 def _request(connection: Any, body: dict[str, Any], *, model: str) -> dict[str, Any]:
     """Send one request frame and return the parsed response frame."""
+
+    if model == "openpi05":
+        # OpenPI 的 msgpack 帧里是 numpy 数组，需要 msgpack-numpy 编解码。
+        import msgpack_numpy
+
+        connection.send(msgpack_numpy.packb(body, use_bin_type=True))
+        response = msgpack_numpy.unpackb(connection.recv())
+        if not isinstance(response, dict):
+            raise RuntimeError(
+                f"policy server returned {type(response).__name__}, expected an object"
+            )
+        return response
 
     if model == "fastwam":
         connection.send(_pack(body))
@@ -236,7 +282,7 @@ def _request(connection: Any, body: dict[str, Any], *, model: str) -> dict[str, 
 def _parse_actions(response: dict[str, Any], *, model: str) -> np.ndarray:
     """Read the server action chunk into a validated `(N, D)` array."""
 
-    if model == "fastwam":
+    if model in {"fastwam", "openpi05"}:
         # 维度由服务端模型决定，这里不写死。
         actions = np.asarray(response["actions"], dtype=float)
         if actions.ndim == 1:

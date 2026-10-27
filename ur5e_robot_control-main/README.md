@@ -410,6 +410,11 @@ URL), then parses and logs the action chunk without commanding the robot.
 Request fields are fixed in `run_ws_control.py`
 (`IMAGE_FIELDS`, `FASTWAM_IMAGE_FIELDS`).
 
+Use `--model openpi05` for OpenPI 0.5's msgpack-numpy protocol. The body carries
+CHW uint8 image arrays, a 7-value float32 single-arm state and a `prompt`;
+returned actions are parsed and logged without commanding the robot. Its field
+mapping lives in `OPENPI_IMAGE_FIELDS`.
+
 ## Project Layout
 
 ```text

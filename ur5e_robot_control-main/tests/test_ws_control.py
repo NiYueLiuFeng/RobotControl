@@ -5,6 +5,11 @@ from types import SimpleNamespace
 
 import numpy as np
 
+try:
+    import msgpack_numpy
+except ModuleNotFoundError:  # optional dependency in some test environments
+    msgpack_numpy = None
+
 
 class FakeConnection:
     def __init__(self, responses):
@@ -212,6 +217,96 @@ class FastWAMProtocolTest(unittest.TestCase):
             model="fastwam",
             vla=make_vla(execute_horizon=1),
             task="plug",
+            max_steps=1,
+            control_hz=1000.0,
+        )
+
+        self.assertEqual(executed, 1)
+        self.assertEqual(env.commands, [])
+
+
+class OpenPI05ProtocolTest(unittest.TestCase):
+    def test_body_matches_openpi_layout(self):
+        from apps.run_ws_control import get_model_body
+
+        obs = {
+            "joint_positions": np.arange(7, dtype=float),
+            "third_left_top_rgb": np.zeros((8, 6, 3), dtype=np.uint8),
+            "wrist_rgb": np.full((8, 6, 3), 255, dtype=np.uint8),
+        }
+
+        body = get_model_body(obs, model="openpi05", task="pick the block")
+
+        self.assertEqual(
+            set(body["images"]),
+            {"cam_high", "cam_left_wrist", "cam_right_wrist"},
+        )
+        for image in body["images"].values():
+            self.assertEqual(image.shape, (3, 8, 6))
+            self.assertEqual(image.dtype, np.uint8)
+        self.assertEqual(body["state"].shape, (7,))
+        self.assertEqual(body["state"].dtype, np.float32)
+        np.testing.assert_array_equal(body["state"], np.arange(7))
+        self.assertEqual(body["prompt"], "pick the block")
+
+    def test_parse_actions_reads_openpi_chunk(self):
+        from apps.run_ws_control import _parse_actions
+
+        actions = _parse_actions(
+            {"actions": np.zeros((3, 7), dtype=np.float32)},
+            model="openpi05",
+        )
+
+        self.assertEqual(actions.shape, (3, 7))
+
+    @unittest.skipIf(msgpack_numpy is None, "msgpack-numpy is not installed")
+    def test_request_round_trips_numpy_body(self):
+        from apps.run_ws_control import _request
+
+        body = {
+            "images": {"cam_high": np.zeros((3, 4, 4), dtype=np.uint8)},
+            "state": np.arange(7, dtype=np.float32),
+            "prompt": "pick",
+        }
+        connection = FakeConnection(
+            [
+                msgpack_numpy.packb(
+                    {
+                        "actions": np.zeros((2, 7), dtype=np.float32),
+                        "state": np.arange(7, dtype=np.float32),
+                        "server_timing": {"infer_ms": 1.0},
+                    }
+                )
+            ]
+        )
+
+        response = _request(connection, body, model="openpi05")
+
+        sent = msgpack_numpy.unpackb(connection.sent[0])
+        np.testing.assert_array_equal(sent["state"], body["state"])
+        self.assertEqual(response["actions"].shape, (2, 7))
+
+    @unittest.skipIf(msgpack_numpy is None, "msgpack-numpy is not installed")
+    def test_run_parses_actions_without_commanding_robot(self):
+        from apps.run_ws_control import _run
+
+        connection = FakeConnection(
+            [msgpack_numpy.packb({"actions": np.zeros((1, 7), dtype=np.float32)})]
+        )
+        env = FakeEnv(
+            {
+                "joint_positions": np.zeros(7),
+                "third_left_top_rgb": np.zeros((4, 4, 3), dtype=np.uint8),
+                "wrist_rgb": np.zeros((4, 4, 3), dtype=np.uint8),
+            }
+        )
+
+        executed = _run(
+            env,
+            connection,
+            model="openpi05",
+            vla=make_vla(execute_horizon=1),
+            task="pick",
             max_steps=1,
             control_hz=1000.0,
         )
